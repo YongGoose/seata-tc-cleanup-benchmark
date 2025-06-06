@@ -16,6 +16,7 @@
  */
 package org.apache.seata.server.session;
 
+import com.sun.jna.IntegerType;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -24,10 +25,16 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 import org.apache.seata.common.ConfigurationKeys;
+import org.apache.seata.common.thread.NamedThreadFactory;
 import org.apache.seata.common.util.CollectionUtils;
 import org.apache.seata.config.Configuration;
 import org.apache.seata.config.ConfigurationFactory;
@@ -67,6 +74,9 @@ public class SessionHelper {
             ConfigurationKeys.ENABLE_BRANCH_ASYNC_REMOVE, DEFAULT_ENABLE_BRANCH_ASYNC_REMOVE);
 
     private static final String GROUP = CONFIG.getConfig(ConfigurationKeys.SERVER_RAFT_GROUP, DEFAULT_SEATA_GROUP);
+
+    private static final Integer THREAD_SIZE = ConfigurationFactory.getInstance().getInt(
+        "session.branch.thread.size", Runtime.getRuntime().availableProcessors() * 2);
 
     /**
      * The instance of DefaultCoordinator
@@ -339,30 +349,78 @@ public class SessionHelper {
      * @param handler  the handler
      */
     public static Boolean forEach(Collection<BranchSession> sessions, BranchSessionHandler handler, boolean parallel) throws TransactionException {
-        if (CollectionUtils.isNotEmpty(sessions)) {
-            Boolean result;
-            if (parallel) {
-                Map<String, List<BranchSession>> map = new HashMap<>(4);
+        if (CollectionUtils.isEmpty(sessions)) {
+            return null;
+        }
+
+        Boolean result;
+        if (parallel) {
+            ExecutorService executor = Executors.newFixedThreadPool(THREAD_SIZE);
+
+            try {
+                // 리소스 ID별로 그룹화
+                Map<String, List<BranchSession>> resourceMap = new HashMap<>();
                 for (BranchSession session : sessions) {
-                    map.computeIfAbsent(session.getResourceId(), k -> new ArrayList<>()).add(session);
+                    resourceMap.computeIfAbsent(session.getResourceId(), k -> new ArrayList<>()).add(session);
                 }
-                List<CompletableFuture<Boolean>> completableFutures = new ArrayList<>(map.size());
-                map.forEach((k, v) -> completableFutures.add(CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return SessionHelper.forEach(v, handler, false);
-                    } catch (TransactionException e) {
-                        throw new RuntimeException(e);
-                    }
-                })));
-                try {
-                    for (CompletableFuture<Boolean> completableFuture : completableFutures) {
-                        result = completableFuture.get();
-                        if (result == null) {
-                            continue;
+
+                // 최적 배치 크기 계산
+                int optimalBatchSize = calculateOptimalBatchSize(sessions.size(), THREAD_SIZE);
+
+                List<CompletableFuture<Boolean>> futures = new ArrayList<>();
+
+                // 리소스 ID별로 처리하되, 큰 그룹은 배치로 분할
+                for (Map.Entry<String, List<BranchSession>> entry : resourceMap.entrySet()) {
+                    List<BranchSession> resourceSessions = entry.getValue();
+
+                    // 그룹이 최적 배치 크기보다 큰 경우 분할
+                    /*
+                    해당 최적화의 경우 테스트가 필요할 것 같음
+                    1. 동시에 여러 글로벌 트랜잭션을 실행시키되, 글로벌 트랜잭션 내부 브랜치 트랜잭션의 수가 비슷하게 구성
+                    2. 동시에 여러 글로벌 트랜잭션을 실행시키되, 특정 글로벌 트랜잭션 내부에 많은 수의 브랜치 트랜잭션이 존재.
+                     */
+                    if (resourceSessions.size() > optimalBatchSize) {
+                        for (int i = 0; i < resourceSessions.size(); i += optimalBatchSize) {
+                            int endIndex = Math.min(i + optimalBatchSize, resourceSessions.size());
+                            List<BranchSession> batch = resourceSessions.subList(i, endIndex);
+                            futures.add(CompletableFuture.supplyAsync(() -> {
+                                try {
+                                    return processBatch(batch, handler);
+                                } catch (TransactionException e) {
+                                    throw new RuntimeException(e);
+                                }
+                            }, executor));
                         }
+                    } else {
+                        // 작은 그룹은 그대로 처리
+                        futures.add(CompletableFuture.supplyAsync(() -> {
+                            try {
+                                return processBatch(resourceSessions, handler);
+                            } catch (TransactionException e) {
+                                throw new RuntimeException(e);
+                            }
+                        }, executor));
+                    }
+                }
+
+                CompletableFuture<Boolean> anyResult = CompletableFuture.anyOf(
+                        futures.toArray(new CompletableFuture[0]))
+                    .thenApply(o -> (Boolean)o);
+
+                try {
+                    result = anyResult.get();
+                    if (result != null) {
                         return result;
                     }
+
+                    for (CompletableFuture<Boolean> future : futures) {
+                        result = future.get();
+                        if (result != null) {
+                            return result;
+                        }
+                    }
                 } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                     throw new TransactionException(e);
                 } catch (ExecutionException e) {
                     Throwable throwable = e.getCause();
@@ -374,19 +432,45 @@ public class SessionHelper {
                     }
                     throw new TransactionException(e);
                 }
-            } else {
-                for (BranchSession branchSession : sessions) {
-                    try {
-                        MDC.put(RootContext.MDC_KEY_BRANCH_ID, String.valueOf(branchSession.getBranchId()));
-                        result = handler.handle(branchSession);
-                        if (result == null) {
-                            continue;
-                        }
+            } finally {
+                executor.shutdown();
+            }
+        } else {
+            // 순차 처리 (기존 코드와 동일)
+            for (BranchSession branchSession : sessions) {
+                try {
+                    MDC.put(RootContext.MDC_KEY_BRANCH_ID, String.valueOf(branchSession.getBranchId()));
+                    result = handler.handle(branchSession);
+                    if (result != null) {
                         return result;
-                    } finally {
-                        MDC.remove(RootContext.MDC_KEY_BRANCH_ID);
                     }
+                } finally {
+                    MDC.remove(RootContext.MDC_KEY_BRANCH_ID);
                 }
+            }
+        }
+        return null;
+    }
+
+    // 최적의 배치 크기 계산 메서드
+    private static int calculateOptimalBatchSize(int totalSize, int threadCount) {
+        // 최소 배치 크기는 10, 기본 배치 크기는 전체 크기를 스레드 수의 2배로 나눈 값
+        int batchSize = Math.max(10, totalSize / (threadCount * 2));
+        // 배치 크기가 너무 크지 않도록 제한
+        return Math.min(batchSize, 100);
+    }
+
+    // 배치 처리를 위한 헬퍼 메서드
+    private static Boolean processBatch(List<BranchSession> batch, BranchSessionHandler handler) throws TransactionException {
+        for (BranchSession branchSession : batch) {
+            try {
+                MDC.put(RootContext.MDC_KEY_BRANCH_ID, String.valueOf(branchSession.getBranchId()));
+                Boolean result = handler.handle(branchSession);
+                if (result != null) {
+                    return result;
+                }
+            } finally {
+                MDC.remove(RootContext.MDC_KEY_BRANCH_ID);
             }
         }
         return null;
