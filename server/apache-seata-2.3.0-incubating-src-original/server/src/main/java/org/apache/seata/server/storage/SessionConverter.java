@@ -16,29 +16,29 @@
  */
 package org.apache.seata.server.storage;
 
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-import java.util.Collections;
 import org.apache.seata.common.util.CollectionUtils;
 import org.apache.seata.common.util.StringUtils;
-import org.apache.seata.server.cluster.raft.sync.msg.dto.BranchTransactionDTO;
-import org.apache.seata.server.console.vo.BranchSessionVO;
-import org.apache.seata.server.console.vo.GlobalSessionVO;
 import org.apache.seata.core.model.BranchStatus;
 import org.apache.seata.core.model.BranchType;
 import org.apache.seata.core.model.GlobalStatus;
 import org.apache.seata.core.store.BranchTransactionDO;
 import org.apache.seata.core.store.GlobalTransactionDO;
+import org.apache.seata.server.cluster.raft.sync.msg.dto.BranchTransactionDTO;
+import org.apache.seata.server.console.vo.BranchSessionVO;
+import org.apache.seata.server.console.vo.GlobalSessionVO;
 import org.apache.seata.server.session.BranchSession;
 import org.apache.seata.server.session.GlobalSession;
 import org.apache.seata.server.store.SessionStorable;
 import org.springframework.beans.BeanUtils;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
 /**
  * The session converter
- *
  */
 public class SessionConverter {
 
@@ -77,7 +77,7 @@ public class SessionConverter {
         branchSession.setResourceGroupId(branchTransactionDO.getResourceGroupId());
         branchSession.setStatus(BranchStatus.get(branchTransactionDO.getStatus()));
         if (branchTransactionDO instanceof BranchTransactionDTO) {
-            branchSession.setLockKey(((BranchTransactionDTO)branchTransactionDO).getLockKey());
+            branchSession.setLockKey(((BranchTransactionDTO) branchTransactionDO).getLockKey());
         }
         return branchSession;
     }
@@ -89,12 +89,12 @@ public class SessionConverter {
     }
 
     public static void convertGlobalTransactionDO(GlobalTransactionDO globalTransactionDO,
-        SessionStorable session) {
+                                                  SessionStorable session) {
         if (!(session instanceof GlobalSession)) {
             throw new IllegalArgumentException(
-                "The parameter of SessionStorable is not available, SessionStorable:" + StringUtils.toString(session));
+                    "The parameter of SessionStorable is not available, SessionStorable:" + StringUtils.toString(session));
         }
-        GlobalSession globalSession = (GlobalSession)session;
+        GlobalSession globalSession = (GlobalSession) session;
         globalTransactionDO.setXid(globalSession.getXid());
         globalTransactionDO.setStatus(globalSession.getStatus().getCode());
         globalTransactionDO.setApplicationId(globalSession.getApplicationId());
@@ -119,7 +119,7 @@ public class SessionConverter {
     public static BranchTransactionDTO convertBranchTransactionDTO(SessionStorable session) {
         if (!(session instanceof BranchSession)) {
             throw new IllegalArgumentException(
-                "The parameter of SessionStorable is not available, SessionStorable:" + StringUtils.toString(session));
+                    "The parameter of SessionStorable is not available, SessionStorable:" + StringUtils.toString(session));
         }
         BranchTransactionDTO branchTransactionDTO = new BranchTransactionDTO();
         convertBranchTransaction(branchTransactionDTO, session);
@@ -127,7 +127,7 @@ public class SessionConverter {
     }
 
     public static void convertBranchTransaction(BranchTransactionDO branchTransactionDO, SessionStorable session) {
-        BranchSession branchSession = (BranchSession)session;
+        BranchSession branchSession = (BranchSession) session;
         branchTransactionDO.setXid(branchSession.getXid());
         branchTransactionDO.setBranchId(branchSession.getBranchId());
         branchTransactionDO.setBranchType(branchSession.getBranchType().name());
@@ -138,7 +138,7 @@ public class SessionConverter {
         branchTransactionDO.setResourceId(branchSession.getResourceId());
         branchTransactionDO.setStatus(branchSession.getStatus().getCode());
         if (branchTransactionDO instanceof BranchTransactionDTO) {
-            ((BranchTransactionDTO)branchTransactionDO).setLockKey(branchSession.getLockKey());
+            ((BranchTransactionDTO) branchTransactionDO).setLockKey(branchSession.getLockKey());
         }
     }
 
@@ -146,7 +146,7 @@ public class SessionConverter {
         if (CollectionUtils.isNotEmpty(globalSessions)) {
             for (GlobalSession globalSession : globalSessions) {
                 GlobalSessionVO globalSessionVO = new GlobalSessionVO();
-                BeanUtils.copyProperties(globalSession,globalSessionVO);
+                BeanUtils.copyProperties(globalSession, globalSessionVO);
                 globalSessionVO.setStatus(globalSession.getStatus().getCode());
                 globalSessionVO.setTimeout(Long.valueOf(globalSession.getTimeout()));
                 globalSessionVO.setBranchSessionVOs(convertToBranchSession(globalSession.getBranchSessions()));
@@ -160,7 +160,7 @@ public class SessionConverter {
         if (CollectionUtils.isNotEmpty(branchSessions)) {
             for (BranchSession branchSession : branchSessions) {
                 BranchSessionVO branchSessionVONew = new BranchSessionVO();
-                BeanUtils.copyProperties(branchSession,branchSessionVONew);
+                BeanUtils.copyProperties(branchSession, branchSessionVONew);
 
                 branchSessionVONew.setBranchType(branchSession.getBranchType().name());
                 branchSessionVONew.setStatus(branchSession.getStatus().getCode());

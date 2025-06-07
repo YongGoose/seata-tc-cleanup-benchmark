@@ -16,7 +16,26 @@
  */
 package org.apache.seata.server.session;
 
-import com.sun.jna.IntegerType;
+import org.apache.seata.common.ConfigurationKeys;
+import org.apache.seata.common.util.CollectionUtils;
+import org.apache.seata.common.util.UUIDGenerator;
+import org.apache.seata.config.Configuration;
+import org.apache.seata.config.ConfigurationFactory;
+import org.apache.seata.core.context.RootContext;
+import org.apache.seata.core.exception.TransactionException;
+import org.apache.seata.core.model.BranchStatus;
+import org.apache.seata.core.model.BranchType;
+import org.apache.seata.core.model.GlobalStatus;
+import org.apache.seata.metrics.IdConstants;
+import org.apache.seata.server.cluster.raft.context.SeataClusterContext;
+import org.apache.seata.server.coordinator.DefaultCoordinator;
+import org.apache.seata.server.metrics.MetricsPublisher;
+import org.apache.seata.server.store.StoreConfig;
+import org.apache.seata.server.store.StoreConfig.SessionMode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -27,39 +46,14 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
-
-import org.apache.seata.common.ConfigurationKeys;
-import org.apache.seata.common.thread.NamedThreadFactory;
-import org.apache.seata.common.util.CollectionUtils;
-import org.apache.seata.config.Configuration;
-import org.apache.seata.config.ConfigurationFactory;
-import org.apache.seata.core.context.RootContext;
-import org.apache.seata.core.exception.TransactionException;
-import org.apache.seata.core.model.BranchStatus;
-import org.apache.seata.core.model.BranchType;
-import org.apache.seata.core.model.GlobalStatus;
-import org.apache.seata.metrics.IdConstants;
-import org.apache.seata.common.util.UUIDGenerator;
-import org.apache.seata.server.cluster.raft.context.SeataClusterContext;
-import org.apache.seata.server.coordinator.DefaultCoordinator;
-import org.apache.seata.server.metrics.MetricsPublisher;
-import org.apache.seata.server.store.StoreConfig;
-import org.apache.seata.server.store.StoreConfig.SessionMode;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 
 import static org.apache.seata.common.DefaultValues.DEFAULT_ENABLE_BRANCH_ASYNC_REMOVE;
 import static org.apache.seata.common.DefaultValues.DEFAULT_SEATA_GROUP;
 
 /**
  * The type Session helper.
- *
  */
 public class SessionHelper {
 
@@ -76,7 +70,7 @@ public class SessionHelper {
     private static final String GROUP = CONFIG.getConfig(ConfigurationKeys.SERVER_RAFT_GROUP, DEFAULT_SEATA_GROUP);
 
     private static final Integer THREAD_SIZE = ConfigurationFactory.getInstance().getInt(
-        "session.branch.thread.size", Runtime.getRuntime().availableProcessors() * 2);
+            "session.branch.thread.size", Runtime.getRuntime().availableProcessors() * 2);
 
     /**
      * The instance of DefaultCoordinator
@@ -84,7 +78,7 @@ public class SessionHelper {
     private static final DefaultCoordinator COORDINATOR = DefaultCoordinator.getInstance();
 
     private static final boolean DELAY_HANDLE_SESSION = !(Objects.equals(StoreConfig.getSessionMode(), SessionMode.FILE)
-        || Objects.equals(StoreConfig.getSessionMode(), SessionMode.RAFT));
+                                                          || Objects.equals(StoreConfig.getSessionMode(), SessionMode.RAFT));
 
 
     private SessionHelper() {
@@ -105,7 +99,7 @@ public class SessionHelper {
      * @return the branch session
      */
     public static BranchSession newBranchByGlobal(GlobalSession globalSession, BranchType branchType, String resourceId,
-            String applicationData, String lockKeys, String clientId) {
+                                                  String applicationData, String lockKeys, String clientId) {
         BranchSession branchSession = new BranchSession(branchType);
 
         branchSession.setXid(globalSession.getXid());
@@ -160,7 +154,7 @@ public class SessionHelper {
                 MetricsPublisher.postSessionDoneEvent(globalSession, retryGlobal, false);
             }
             MetricsPublisher.postSessionDoneEvent(globalSession, IdConstants.STATUS_VALUE_AFTER_COMMITTED_KEY, true,
-                beginTime, retryBranch);
+                    beginTime, retryBranch);
         } else {
             globalSession.setStatus(GlobalStatus.Committed);
             if (globalSession.isSaga()) {
@@ -184,20 +178,20 @@ public class SessionHelper {
     /**
      * End commit failed.
      *
-     * @param globalSession the global session
-     * @param retryGlobal the retry global
+     * @param globalSession  the global session
+     * @param retryGlobal    the retry global
      * @param isRetryTimeout is retry timeout
      * @throws TransactionException the transaction exception
      */
     public static void endCommitFailed(GlobalSession globalSession, boolean retryGlobal, boolean isRetryTimeout)
-        throws TransactionException {
+            throws TransactionException {
         if (isRetryTimeout) {
             globalSession.changeGlobalStatus(GlobalStatus.CommitRetryTimeout);
         } else {
             globalSession.changeGlobalStatus(GlobalStatus.CommitFailed);
         }
         LOGGER.error("The Global session {} has changed the status to {}, need to be handled it manually.",
-            globalSession.getXid(), globalSession.getStatus());
+                globalSession.getXid(), globalSession.getStatus());
 
         globalSession.end();
         MetricsPublisher.postSessionDoneEvent(globalSession, retryGlobal, false);
@@ -256,9 +250,9 @@ public class SessionHelper {
     /**
      * End rollback failed.
      *
-     * @param globalSession the global session
-     * @param retryGlobal   the retry global
-     * @param isRetryTimeout   is retry timeout
+     * @param globalSession  the global session
+     * @param retryGlobal    the retry global
+     * @param isRetryTimeout is retry timeout
      * @throws TransactionException the transaction exception
      */
     public static void endRollbackFailed(GlobalSession globalSession, boolean retryGlobal, boolean isRetryTimeout) throws TransactionException {
@@ -300,7 +294,7 @@ public class SessionHelper {
      *
      * @param sessions the global sessions
      * @param handler  the handler
-     * @param parallel  the parallel
+     * @param parallel the parallel
      */
     public static void forEach(Collection<GlobalSession> sessions, GlobalSessionHandler handler, boolean parallel) {
         if (CollectionUtils.isEmpty(sessions)) {
@@ -382,12 +376,17 @@ public class SessionHelper {
                     if (resourceSessions.size() > optimalBatchSize) {
                         for (int i = 0; i < resourceSessions.size(); i += optimalBatchSize) {
                             int endIndex = Math.min(i + optimalBatchSize, resourceSessions.size());
+                            LOGGER.info("[forEach] batch partitioning with range {} to {}", i, endIndex);
                             List<BranchSession> batch = resourceSessions.subList(i, endIndex);
                             futures.add(CompletableFuture.supplyAsync(() -> {
+                                final long start = System.currentTimeMillis();
                                 try {
                                     return processBatch(batch, handler);
                                 } catch (TransactionException e) {
                                     throw new RuntimeException(e);
+                                } finally {
+                                    final long time = System.currentTimeMillis() - start;
+                                    LOGGER.info("[CompletableFuture] elapsed {} ms", time);
                                 }
                             }, executor));
                         }
@@ -405,7 +404,7 @@ public class SessionHelper {
 
                 CompletableFuture<Boolean> anyResult = CompletableFuture.anyOf(
                         futures.toArray(new CompletableFuture[0]))
-                    .thenApply(o -> (Boolean)o);
+                        .thenApply(o -> (Boolean) o);
 
                 try {
                     result = anyResult.get();
@@ -427,7 +426,7 @@ public class SessionHelper {
                     if (throwable instanceof RuntimeException) {
                         Throwable cause = throwable.getCause();
                         if (cause instanceof TransactionException) {
-                            throw (TransactionException)cause;
+                            throw (TransactionException) cause;
                         }
                     }
                     throw new TransactionException(e);
@@ -463,6 +462,7 @@ public class SessionHelper {
     // 배치 처리를 위한 헬퍼 메서드
     private static Boolean processBatch(List<BranchSession> batch, BranchSessionHandler handler) throws TransactionException {
         for (BranchSession branchSession : batch) {
+            final long start = System.currentTimeMillis();
             try {
                 MDC.put(RootContext.MDC_KEY_BRANCH_ID, String.valueOf(branchSession.getBranchId()));
                 Boolean result = handler.handle(branchSession);
@@ -471,6 +471,8 @@ public class SessionHelper {
                 }
             } finally {
                 MDC.remove(RootContext.MDC_KEY_BRANCH_ID);
+                final long time = System.currentTimeMillis() - start;
+                LOGGER.info("[processBatch] elapsed {} ms", time);
             }
         }
         return null;
@@ -500,9 +502,10 @@ public class SessionHelper {
 
     /**
      * remove branchSession from globalSession
+     *
      * @param globalSession the globalSession
      * @param branchSession the branchSession
-     * @param isAsync if asynchronous remove
+     * @param isAsync       if asynchronous remove
      */
     public static void removeBranch(GlobalSession globalSession, BranchSession branchSession, boolean isAsync)
             throws TransactionException {
@@ -516,8 +519,9 @@ public class SessionHelper {
 
     /**
      * remove branchSession from globalSession
+     *
      * @param globalSession the globalSession
-     * @param isAsync if asynchronous remove
+     * @param isAsync       if asynchronous remove
      */
     public static void removeAllBranch(GlobalSession globalSession, boolean isAsync)
             throws TransactionException {
@@ -545,6 +549,6 @@ public class SessionHelper {
      */
     private static boolean isEnableBranchRemoveAsync() {
         return Objects.equals(Boolean.TRUE, DELAY_HANDLE_SESSION)
-                && Objects.equals(Boolean.TRUE, ENABLE_BRANCH_ASYNC_REMOVE);
+               && Objects.equals(Boolean.TRUE, ENABLE_BRANCH_ASYNC_REMOVE);
     }
 }

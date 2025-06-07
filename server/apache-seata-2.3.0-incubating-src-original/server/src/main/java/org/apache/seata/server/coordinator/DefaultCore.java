@@ -16,10 +16,6 @@
  */
 package org.apache.seata.server.coordinator;
 
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-
 import org.apache.seata.common.DefaultValues;
 import org.apache.seata.common.exception.NotSupportYetException;
 import org.apache.seata.common.loader.EnhancedServiceLoader;
@@ -37,10 +33,13 @@ import org.apache.seata.server.session.BranchSession;
 import org.apache.seata.server.session.GlobalSession;
 import org.apache.seata.server.session.SessionHelper;
 import org.apache.seata.server.session.SessionHolder;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.apache.seata.common.ConfigurationKeys.ENABLE_PARALLEL_HANDLE_BRANCH_KEY;
 import static org.apache.seata.common.ConfigurationKeys.XAER_NOTA_RETRY_TIMEOUT;
@@ -48,7 +47,6 @@ import static org.apache.seata.server.session.BranchSessionHandler.CONTINUE;
 
 /**
  * The type Default core.
- *
  */
 public class DefaultCore implements Core {
 
@@ -69,7 +67,7 @@ public class DefaultCore implements Core {
      */
     public DefaultCore(RemotingServer remotingServer) {
         List<AbstractCore> allCore = EnhancedServiceLoader.loadAll(AbstractCore.class,
-            new Class[] {RemotingServer.class}, new Object[] {remotingServer});
+                new Class[]{RemotingServer.class}, new Object[]{remotingServer});
         if (CollectionUtils.isNotEmpty(allCore)) {
             for (AbstractCore core : allCore) {
                 CORE_MAP.put(core.getHandleBranchType(), core);
@@ -105,7 +103,7 @@ public class DefaultCore implements Core {
     public Long branchRegister(BranchType branchType, String resourceId, String clientId, String xid,
                                String applicationData, String lockKeys) throws TransactionException {
         return getCore(branchType).branchRegister(branchType, resourceId, clientId, xid,
-            applicationData, lockKeys);
+                applicationData, lockKeys);
     }
 
     @Override
@@ -116,7 +114,7 @@ public class DefaultCore implements Core {
 
     @Override
     public boolean lockQuery(BranchType branchType, String resourceId, String xid, String lockKeys)
-        throws TransactionException {
+            throws TransactionException {
         return getCore(branchType).lockQuery(branchType, resourceId, xid, lockKeys);
     }
 
@@ -132,7 +130,7 @@ public class DefaultCore implements Core {
 
     @Override
     public String begin(String applicationId, String transactionServiceGroup, String name, int timeout)
-        throws TransactionException {
+            throws TransactionException {
         GlobalSession session = GlobalSession.createGlobalSession(applicationId, transactionServiceGroup, name, timeout);
         MDC.put(RootContext.MDC_KEY_XID, session.getXid());
 
@@ -143,7 +141,6 @@ public class DefaultCore implements Core {
 
         return session.getXid();
     }
-
 
 
     @Override
@@ -201,6 +198,7 @@ public class DefaultCore implements Core {
             success = getCore(BranchType.SAGA).doGlobalCommit(globalSession, retrying);
         } else {
             List<BranchSession> branchSessions = globalSession.getSortedBranches();
+            LOGGER.info("[doGlobalCommit] loaded {} branchSessions", branchSessions.size());
             Boolean result = SessionHelper.forEach(branchSessions, branchSession -> {
                 // if not retrying, skip the canBeCommittedAsync branches
                 if (!retrying && branchSession.canBeCommittedAsync()) {
@@ -216,13 +214,13 @@ public class DefaultCore implements Core {
                 // will report the RDONLY status during XA transactions.
                 // At this point, the branch transaction can be ignored.
                 if (currentStatus == BranchStatus.PhaseOne_RDONLY
-                        && branchSession.getBranchType() == BranchType.XA) {
+                    && branchSession.getBranchType() == BranchType.XA) {
                     SessionHelper.removeBranch(globalSession, branchSession, !retrying);
                     return CONTINUE;
                 }
                 try {
                     BranchStatus branchStatus = getCore(branchSession.getBranchType()).branchCommit(globalSession, branchSession);
-                    if (isXaerNotaTimeout(globalSession,branchStatus)) {
+                    if (isXaerNotaTimeout(globalSession, branchStatus)) {
                         LOGGER.info("Commit branch XAER_NOTA retry timeout, xid = {} branchId = {}", globalSession.getXid(), branchSession.getBranchId());
                         branchStatus = BranchStatus.PhaseTwo_Committed;
                     }
@@ -244,18 +242,18 @@ public class DefaultCore implements Core {
                             }
                             if (globalSession.canBeCommittedAsync()) {
                                 LOGGER.error("Committing branch transaction[{}], status:{} and will retry later",
-                                    branchSession.getBranchId(), branchStatus);
+                                        branchSession.getBranchId(), branchStatus);
                                 return CONTINUE;
                             } else {
                                 LOGGER.error(
-                                    "Committing global transaction[{}] failed, caused by branch transaction[{}] commit failed, will retry later.", globalSession.getXid(), branchSession.getBranchId());
+                                        "Committing global transaction[{}] failed, caused by branch transaction[{}] commit failed, will retry later.", globalSession.getXid(), branchSession.getBranchId());
                                 return false;
                             }
                     }
                 } catch (Exception ex) {
                     String commitInfo = retrying ? "Global commit continue" : "Global commit failed";
                     StackTraceLogger.error(LOGGER, ex, "Committing branch transaction exception:retrying={}, {}, {}",
-                        new String[] {String.valueOf(retrying), branchSession.toString(), commitInfo});
+                            new String[]{String.valueOf(retrying), branchSession.toString(), commitInfo});
                     if (!retrying) {
                         globalSession.queueToRetryCommit();
                         throw new TransactionException(ex);
@@ -301,7 +299,7 @@ public class DefaultCore implements Core {
         if (!shouldRollBack) {
             return globalSession.getStatus();
         }
-        
+
         boolean rollbackSuccess = doGlobalRollback(globalSession, false);
         return rollbackSuccess ? GlobalStatus.Rollbacked : globalSession.getStatus();
     }
@@ -346,8 +344,8 @@ public class DefaultCore implements Core {
                     }
                 } catch (Exception ex) {
                     StackTraceLogger.error(LOGGER, ex,
-                        "Rollback branch transaction exception, xid = {} ,branchId = {} ,retrying={} ,exception = {}, global rollback failed",
-                        new String[] {globalSession.getXid(), String.valueOf(branchSession.getBranchId()), String.valueOf(retrying), ex.getMessage()});
+                            "Rollback branch transaction exception, xid = {} ,branchId = {} ,retrying={} ,exception = {}, global rollback failed",
+                            new String[]{globalSession.getXid(), String.valueOf(branchSession.getBranchId()), String.valueOf(retrying), ex.getMessage()});
                     if (!retrying) {
                         globalSession.queueToRetryRollback();
                     }
@@ -398,9 +396,9 @@ public class DefaultCore implements Core {
 
     private boolean isXaerNotaTimeout(GlobalSession globalSession, BranchStatus branchStatus) {
         if (BranchStatus.PhaseTwo_CommitFailed_XAER_NOTA_Retryable.equals(branchStatus) ||
-                BranchStatus.PhaseTwo_RollbackFailed_XAER_NOTA_Retryable.equals(branchStatus)) {
+            BranchStatus.PhaseTwo_RollbackFailed_XAER_NOTA_Retryable.equals(branchStatus)) {
             return System.currentTimeMillis() > globalSession.getBeginTime() + globalSession.getTimeout() +
-                    Math.max(RETRY_XAER_NOTA_TIMEOUT, globalSession.getTimeout());
+                                                Math.max(RETRY_XAER_NOTA_TIMEOUT, globalSession.getTimeout());
         } else {
             return false;
         }
