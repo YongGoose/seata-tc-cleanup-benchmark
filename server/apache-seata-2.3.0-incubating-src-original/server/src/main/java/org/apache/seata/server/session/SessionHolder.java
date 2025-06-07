@@ -16,14 +16,6 @@
  */
 package org.apache.seata.server.session;
 
-import java.io.IOException;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-
 import org.apache.seata.common.ConfigurationKeys;
 import org.apache.seata.common.XID;
 import org.apache.seata.common.exception.ShouldNeverHappenException;
@@ -47,11 +39,17 @@ import org.apache.seata.server.store.VGroupMappingStoreManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+
 import static java.io.File.separator;
 import static org.apache.seata.common.ConfigurationKeys.SERVER_SERVICE_PORT_CAMEL;
-import static org.apache.seata.common.DefaultValues.DEFAULT_DISTRIBUTED_LOCK_EXPIRE_TIME;
-import static org.apache.seata.common.DefaultValues.DEFAULT_SEATA_GROUP;
-import static org.apache.seata.common.DefaultValues.DEFAULT_SESSION_STORE_FILE_DIR;
+import static org.apache.seata.common.DefaultValues.*;
 
 /**
  * The type Session holder.
@@ -116,27 +114,27 @@ public class SessionHolder {
             if (SessionMode.RAFT.equals(sessionMode)) {
                 String group = CONFIG.getConfig(ConfigurationKeys.SERVER_RAFT_GROUP, DEFAULT_SEATA_GROUP);
                 ROOT_SESSION_MANAGER = EnhancedServiceLoader.load(SessionManager.class, SessionMode.RAFT.getName(),
-                    new Object[]{ROOT_SESSION_MANAGER_NAME});
+                        new Object[]{ROOT_SESSION_MANAGER_NAME});
                 SESSION_MANAGER_MAP = new HashMap<>();
                 SESSION_MANAGER_MAP.put(group, ROOT_SESSION_MANAGER);
                 RaftServerManager.start();
             } else {
                 String vGroupMappingStorePath = CONFIG.getConfig(ConfigurationKeys.STORE_FILE_DIR,
-                    DEFAULT_VGROUP_MAPPING_STORE_FILE_DIR)  + separator
-                        + System.getProperty(SERVER_SERVICE_PORT_CAMEL);
+                        DEFAULT_VGROUP_MAPPING_STORE_FILE_DIR) + separator
+                                                + System.getProperty(SERVER_SERVICE_PORT_CAMEL);
                 String sessionStorePath =
-                    CONFIG.getConfig(ConfigurationKeys.STORE_FILE_DIR, DEFAULT_SESSION_STORE_FILE_DIR) + separator
+                        CONFIG.getConfig(ConfigurationKeys.STORE_FILE_DIR, DEFAULT_SESSION_STORE_FILE_DIR) + separator
                         + System.getProperty(SERVER_SERVICE_PORT_CAMEL);
                 if (StringUtils.isBlank(sessionStorePath) || StringUtils.isBlank(vGroupMappingStorePath)) {
                     throw new StoreException("the {store.file.dir} is empty.");
                 }
                 ROOT_VGROUP_MAPPING_MANAGER = EnhancedServiceLoader.load(VGroupMappingStoreManager.class, SessionMode.FILE.getName(),
-                    new Object[]{vGroupMappingStorePath});
+                        new Object[]{vGroupMappingStorePath});
 
                 ROOT_SESSION_MANAGER = EnhancedServiceLoader.load(SessionManager.class, SessionMode.FILE.getName(),
-                    new Object[]{ROOT_SESSION_MANAGER_NAME, sessionStorePath});
+                        new Object[]{ROOT_SESSION_MANAGER_NAME, sessionStorePath});
                 ROOT_SESSION_MANAGER = EnhancedServiceLoader.load(SessionManager.class, SessionMode.FILE.getName(),
-                    new Object[]{ROOT_SESSION_MANAGER_NAME, sessionStorePath});
+                        new Object[]{ROOT_SESSION_MANAGER_NAME, sessionStorePath});
                 reload(sessionMode);
             }
         } else if (SessionMode.REDIS.equals(sessionMode)) {
@@ -180,7 +178,7 @@ public class SessionHolder {
                             SessionHelper.endRollbacked(globalSession, true);
                         } catch (TransactionException e) {
                             LOGGER.error("Could not handle the global session, xid: {},error: {}",
-                                globalSession.getXid(), e.getMessage());
+                                    globalSession.getXid(), e.getMessage());
                         }
                         break;
                     case Committed:
@@ -188,7 +186,7 @@ public class SessionHolder {
                             SessionHelper.endCommitted(globalSession, true);
                         } catch (TransactionException e) {
                             LOGGER.error("Could not handle the global session, xid: {},error: {}",
-                                globalSession.getXid(), e.getMessage());
+                                    globalSession.getXid(), e.getMessage());
                         }
                         break;
                     case Finished:
@@ -217,7 +215,7 @@ public class SessionHolder {
                             if (GlobalStatus.Rollbacking.equals(globalSession.getStatus())
                                 || GlobalStatus.TimeoutRollbacking.equals(globalSession.getStatus())) {
                                 globalSession.getBranchSessions().parallelStream()
-                                    .forEach(branchSession -> branchSession.setLockStatus(LockStatus.Rollbacking));
+                                        .forEach(branchSession -> branchSession.setLockStatus(LockStatus.Rollbacking));
                             }
                         }
                         switch (globalStatus) {
@@ -233,7 +231,7 @@ public class SessionHolder {
                                         try {
                                             globalSession.changeGlobalStatus(GlobalStatus.RollbackRetrying);
                                             LOGGER.info("change global status: {}, xid: {}", globalSession.getStatus(),
-                                                globalSession.getXid());
+                                                    globalSession.getXid());
                                         } catch (TransactionException e) {
                                             LOGGER.error("change global status fail: {}", e.getMessage(), e);
                                         }
@@ -256,7 +254,7 @@ public class SessionHolder {
             // Redis, db and so on
             CompletableFuture.runAsync(() -> {
                 SessionCondition searchCondition = new SessionCondition(GlobalStatus.UnKnown, GlobalStatus.Committed,
-                    GlobalStatus.Rollbacked, GlobalStatus.TimeoutRollbacked, GlobalStatus.Finished);
+                        GlobalStatus.Rollbacked, GlobalStatus.TimeoutRollbacked, GlobalStatus.Finished);
                 searchCondition.setLazyLoadBranch(true);
 
                 long now = System.currentTimeMillis();
@@ -326,7 +324,7 @@ public class SessionHolder {
 
     public static SessionManager getRootSessionManager(String group) {
         return StringUtils.isNotBlank(group) && SESSION_MANAGER_MAP != null
-            ? SESSION_MANAGER_MAP.computeIfAbsent(group, k -> ROOT_SESSION_MANAGER) : ROOT_SESSION_MANAGER;
+                ? SESSION_MANAGER_MAP.computeIfAbsent(group, k -> ROOT_SESSION_MANAGER) : ROOT_SESSION_MANAGER;
     }
 
     //endregion
@@ -360,7 +358,7 @@ public class SessionHolder {
      * @return the value
      */
     public static <T> T lockAndExecute(GlobalSession globalSession, GlobalSession.LockCallable<T> lockCallable)
-        throws TransactionException {
+            throws TransactionException {
         return getRootSessionManager().lockAndExecute(globalSession, lockCallable);
     }
 
@@ -371,7 +369,11 @@ public class SessionHolder {
      * @return the boolean
      */
     public static boolean acquireDistributedLock(String lockKey) {
-        return DISTRIBUTED_LOCKER.acquireLock(new DistributedLockDO(lockKey, XID.getIpAddressAndPort(), DISTRIBUTED_LOCK_EXPIRE_TIME));
+        final long start = System.currentTimeMillis();
+        final boolean b = DISTRIBUTED_LOCKER.acquireLock(new DistributedLockDO(lockKey, XID.getIpAddressAndPort(), DISTRIBUTED_LOCK_EXPIRE_TIME));
+        final long time = System.currentTimeMillis() - start;
+        LOGGER.info("[acquireDistributedLock] elapsed {} ms", time);
+        return b;
     }
 
     /**

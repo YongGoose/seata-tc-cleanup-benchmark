@@ -16,19 +16,9 @@
  */
 package org.apache.seata.server.session;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
-
 import org.apache.seata.common.ConfigurationKeys;
 import org.apache.seata.common.util.CollectionUtils;
+import org.apache.seata.common.util.UUIDGenerator;
 import org.apache.seata.config.Configuration;
 import org.apache.seata.config.ConfigurationFactory;
 import org.apache.seata.core.context.RootContext;
@@ -37,7 +27,6 @@ import org.apache.seata.core.model.BranchStatus;
 import org.apache.seata.core.model.BranchType;
 import org.apache.seata.core.model.GlobalStatus;
 import org.apache.seata.metrics.IdConstants;
-import org.apache.seata.common.util.UUIDGenerator;
 import org.apache.seata.server.cluster.raft.context.SeataClusterContext;
 import org.apache.seata.server.coordinator.DefaultCoordinator;
 import org.apache.seata.server.metrics.MetricsPublisher;
@@ -47,12 +36,24 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
+
 import static org.apache.seata.common.DefaultValues.DEFAULT_ENABLE_BRANCH_ASYNC_REMOVE;
 import static org.apache.seata.common.DefaultValues.DEFAULT_SEATA_GROUP;
 
 /**
  * The type Session helper.
- *
  */
 public class SessionHelper {
 
@@ -68,13 +69,16 @@ public class SessionHelper {
 
     private static final String GROUP = CONFIG.getConfig(ConfigurationKeys.SERVER_RAFT_GROUP, DEFAULT_SEATA_GROUP);
 
+    private static final Integer THREAD_SIZE = ConfigurationFactory.getInstance().getInt(
+            "session.branch.thread.size", Runtime.getRuntime().availableProcessors() * 2);
+
     /**
      * The instance of DefaultCoordinator
      */
     private static final DefaultCoordinator COORDINATOR = DefaultCoordinator.getInstance();
 
     private static final boolean DELAY_HANDLE_SESSION = !(Objects.equals(StoreConfig.getSessionMode(), SessionMode.FILE)
-        || Objects.equals(StoreConfig.getSessionMode(), SessionMode.RAFT));
+                                                          || Objects.equals(StoreConfig.getSessionMode(), SessionMode.RAFT));
 
 
     private SessionHelper() {
@@ -95,7 +99,7 @@ public class SessionHelper {
      * @return the branch session
      */
     public static BranchSession newBranchByGlobal(GlobalSession globalSession, BranchType branchType, String resourceId,
-            String applicationData, String lockKeys, String clientId) {
+                                                  String applicationData, String lockKeys, String clientId) {
         BranchSession branchSession = new BranchSession(branchType);
 
         branchSession.setXid(globalSession.getXid());
@@ -150,7 +154,7 @@ public class SessionHelper {
                 MetricsPublisher.postSessionDoneEvent(globalSession, retryGlobal, false);
             }
             MetricsPublisher.postSessionDoneEvent(globalSession, IdConstants.STATUS_VALUE_AFTER_COMMITTED_KEY, true,
-                beginTime, retryBranch);
+                    beginTime, retryBranch);
         } else {
             globalSession.setStatus(GlobalStatus.Committed);
             if (globalSession.isSaga()) {
@@ -174,20 +178,20 @@ public class SessionHelper {
     /**
      * End commit failed.
      *
-     * @param globalSession the global session
-     * @param retryGlobal the retry global
+     * @param globalSession  the global session
+     * @param retryGlobal    the retry global
      * @param isRetryTimeout is retry timeout
      * @throws TransactionException the transaction exception
      */
     public static void endCommitFailed(GlobalSession globalSession, boolean retryGlobal, boolean isRetryTimeout)
-        throws TransactionException {
+            throws TransactionException {
         if (isRetryTimeout) {
             globalSession.changeGlobalStatus(GlobalStatus.CommitRetryTimeout);
         } else {
             globalSession.changeGlobalStatus(GlobalStatus.CommitFailed);
         }
         LOGGER.error("The Global session {} has changed the status to {}, need to be handled it manually.",
-            globalSession.getXid(), globalSession.getStatus());
+                globalSession.getXid(), globalSession.getStatus());
 
         globalSession.end();
         MetricsPublisher.postSessionDoneEvent(globalSession, retryGlobal, false);
@@ -246,9 +250,9 @@ public class SessionHelper {
     /**
      * End rollback failed.
      *
-     * @param globalSession the global session
-     * @param retryGlobal   the retry global
-     * @param isRetryTimeout   is retry timeout
+     * @param globalSession  the global session
+     * @param retryGlobal    the retry global
+     * @param isRetryTimeout is retry timeout
      * @throws TransactionException the transaction exception
      */
     public static void endRollbackFailed(GlobalSession globalSession, boolean retryGlobal, boolean isRetryTimeout) throws TransactionException {
@@ -290,7 +294,7 @@ public class SessionHelper {
      *
      * @param sessions the global sessions
      * @param handler  the handler
-     * @param parallel  the parallel
+     * @param parallel the parallel
      */
     public static void forEach(Collection<GlobalSession> sessions, GlobalSessionHandler handler, boolean parallel) {
         if (CollectionUtils.isEmpty(sessions)) {
@@ -339,54 +343,136 @@ public class SessionHelper {
      * @param handler  the handler
      */
     public static Boolean forEach(Collection<BranchSession> sessions, BranchSessionHandler handler, boolean parallel) throws TransactionException {
-        if (CollectionUtils.isNotEmpty(sessions)) {
-            Boolean result;
-            if (parallel) {
-                Map<String, List<BranchSession>> map = new HashMap<>(4);
+        if (CollectionUtils.isEmpty(sessions)) {
+            return null;
+        }
+
+        Boolean result;
+        if (parallel) {
+            ExecutorService executor = Executors.newFixedThreadPool(THREAD_SIZE);
+
+            try {
+                // 리소스 ID별로 그룹화
+                Map<String, List<BranchSession>> resourceMap = new HashMap<>();
                 for (BranchSession session : sessions) {
-                    map.computeIfAbsent(session.getResourceId(), k -> new ArrayList<>()).add(session);
+                    resourceMap.computeIfAbsent(session.getResourceId(), k -> new ArrayList<>()).add(session);
                 }
-                List<CompletableFuture<Boolean>> completableFutures = new ArrayList<>(map.size());
-                map.forEach((k, v) -> completableFutures.add(CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return SessionHelper.forEach(v, handler, false);
-                    } catch (TransactionException e) {
-                        throw new RuntimeException(e);
-                    }
-                })));
-                try {
-                    for (CompletableFuture<Boolean> completableFuture : completableFutures) {
-                        result = completableFuture.get();
-                        if (result == null) {
-                            continue;
+
+                // 최적 배치 크기 계산
+                int optimalBatchSize = calculateOptimalBatchSize(sessions.size(), THREAD_SIZE);
+
+                List<CompletableFuture<Boolean>> futures = new ArrayList<>();
+
+                // 리소스 ID별로 처리하되, 큰 그룹은 배치로 분할
+                for (Map.Entry<String, List<BranchSession>> entry : resourceMap.entrySet()) {
+                    List<BranchSession> resourceSessions = entry.getValue();
+
+                    // 그룹이 최적 배치 크기보다 큰 경우 분할
+                    /*
+                    해당 최적화의 경우 테스트가 필요할 것 같음
+                    1. 동시에 여러 글로벌 트랜잭션을 실행시키되, 글로벌 트랜잭션 내부 브랜치 트랜잭션의 수가 비슷하게 구성
+                    2. 동시에 여러 글로벌 트랜잭션을 실행시키되, 특정 글로벌 트랜잭션 내부에 많은 수의 브랜치 트랜잭션이 존재.
+                     */
+                    if (resourceSessions.size() > optimalBatchSize) {
+                        for (int i = 0; i < resourceSessions.size(); i += optimalBatchSize) {
+                            int endIndex = Math.min(i + optimalBatchSize, resourceSessions.size());
+                            LOGGER.info("[forEach] batch partitioning with range {} to {}", i, endIndex);
+                            List<BranchSession> batch = resourceSessions.subList(i, endIndex);
+                            futures.add(CompletableFuture.supplyAsync(() -> {
+                                final long start = System.currentTimeMillis();
+                                try {
+                                    return processBatch(batch, handler);
+                                } catch (TransactionException e) {
+                                    throw new RuntimeException(e);
+                                } finally {
+                                    final long time = System.currentTimeMillis() - start;
+                                    LOGGER.info("[CompletableFuture] elapsed {} ms", time);
+                                }
+                            }, executor));
                         }
+                    } else {
+                        // 작은 그룹은 그대로 처리
+                        futures.add(CompletableFuture.supplyAsync(() -> {
+                            try {
+                                return processBatch(resourceSessions, handler);
+                            } catch (TransactionException e) {
+                                throw new RuntimeException(e);
+                            }
+                        }, executor));
+                    }
+                }
+
+                CompletableFuture<Boolean> anyResult = CompletableFuture.anyOf(
+                        futures.toArray(new CompletableFuture[0]))
+                        .thenApply(o -> (Boolean) o);
+
+                try {
+                    result = anyResult.get();
+                    if (result != null) {
                         return result;
                     }
+
+                    for (CompletableFuture<Boolean> future : futures) {
+                        result = future.get();
+                        if (result != null) {
+                            return result;
+                        }
+                    }
                 } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                     throw new TransactionException(e);
                 } catch (ExecutionException e) {
                     Throwable throwable = e.getCause();
                     if (throwable instanceof RuntimeException) {
                         Throwable cause = throwable.getCause();
                         if (cause instanceof TransactionException) {
-                            throw (TransactionException)cause;
+                            throw (TransactionException) cause;
                         }
                     }
                     throw new TransactionException(e);
                 }
-            } else {
-                for (BranchSession branchSession : sessions) {
-                    try {
-                        MDC.put(RootContext.MDC_KEY_BRANCH_ID, String.valueOf(branchSession.getBranchId()));
-                        result = handler.handle(branchSession);
-                        if (result == null) {
-                            continue;
-                        }
+            } finally {
+                executor.shutdown();
+            }
+        } else {
+            // 순차 처리 (기존 코드와 동일)
+            for (BranchSession branchSession : sessions) {
+                try {
+                    MDC.put(RootContext.MDC_KEY_BRANCH_ID, String.valueOf(branchSession.getBranchId()));
+                    result = handler.handle(branchSession);
+                    if (result != null) {
                         return result;
-                    } finally {
-                        MDC.remove(RootContext.MDC_KEY_BRANCH_ID);
                     }
+                } finally {
+                    MDC.remove(RootContext.MDC_KEY_BRANCH_ID);
                 }
+            }
+        }
+        return null;
+    }
+
+    // 최적의 배치 크기 계산 메서드
+    private static int calculateOptimalBatchSize(int totalSize, int threadCount) {
+        // 최소 배치 크기는 10, 기본 배치 크기는 전체 크기를 스레드 수의 2배로 나눈 값
+        int batchSize = Math.max(10, totalSize / (threadCount * 2));
+        // 배치 크기가 너무 크지 않도록 제한
+        return Math.min(batchSize, 100);
+    }
+
+    // 배치 처리를 위한 헬퍼 메서드
+    private static Boolean processBatch(List<BranchSession> batch, BranchSessionHandler handler) throws TransactionException {
+        for (BranchSession branchSession : batch) {
+            final long start = System.currentTimeMillis();
+            try {
+                MDC.put(RootContext.MDC_KEY_BRANCH_ID, String.valueOf(branchSession.getBranchId()));
+                Boolean result = handler.handle(branchSession);
+                if (result != null) {
+                    return result;
+                }
+            } finally {
+                MDC.remove(RootContext.MDC_KEY_BRANCH_ID);
+                final long time = System.currentTimeMillis() - start;
+                LOGGER.info("[processBatch] elapsed {} ms", time);
             }
         }
         return null;
@@ -416,9 +502,10 @@ public class SessionHelper {
 
     /**
      * remove branchSession from globalSession
+     *
      * @param globalSession the globalSession
      * @param branchSession the branchSession
-     * @param isAsync if asynchronous remove
+     * @param isAsync       if asynchronous remove
      */
     public static void removeBranch(GlobalSession globalSession, BranchSession branchSession, boolean isAsync)
             throws TransactionException {
@@ -432,8 +519,9 @@ public class SessionHelper {
 
     /**
      * remove branchSession from globalSession
+     *
      * @param globalSession the globalSession
-     * @param isAsync if asynchronous remove
+     * @param isAsync       if asynchronous remove
      */
     public static void removeAllBranch(GlobalSession globalSession, boolean isAsync)
             throws TransactionException {
@@ -461,6 +549,6 @@ public class SessionHelper {
      */
     private static boolean isEnableBranchRemoveAsync() {
         return Objects.equals(Boolean.TRUE, DELAY_HANDLE_SESSION)
-                && Objects.equals(Boolean.TRUE, ENABLE_BRANCH_ASYNC_REMOVE);
+               && Objects.equals(Boolean.TRUE, ENABLE_BRANCH_ASYNC_REMOVE);
     }
 }
